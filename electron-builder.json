@@ -1,0 +1,27 @@
+{
+    "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+    "appId": "com.screencap.pro",
+    "productName": "ScreenCap Pro",
+    "directories": {
+        "output": "release"
+    },
+    "files": [
+        "dist/**/*",
+        "dist-electron/**/*",
+        "public/**/*"
+    ],
+    "asarUnpack": [
+        "node_modules/ffmpeg-static/**/*"
+    ],
+    "win": {
+        "target": [
+            {
+                "target": "portable",
+                "arch": [
+                    "x64"
+                ]
+            }
+        ],
+        "icon": "public/icon.ico"
+    }
+}

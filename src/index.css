@@ -1,0 +1,151 @@
+@import "tailwindcss";
+
+/* 全局样式 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* 选区模式下的背景 */
+.selector-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: transparent;
+  cursor: crosshair;
+}
+
+/* 选区遮罩 */
+.selection-mask {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
+/* 选区边框 */
+.selection-box {
+  position: absolute;
+  border: 2px dashed #00a8ff;
+  background: transparent;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5);
+}
+
+/* 选区手柄 */
+.resize-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: #00a8ff;
+  border: 1px solid #fff;
+  border-radius: 2px;
+}
+
+/* 尺寸标签 */
+.size-label {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: monospace;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* 工具栏 */
+.toolbar {
+  position: absolute;
+  display: flex;
+  gap: 8px;
+  background: rgba(30, 30, 30, 0.95);
+  padding: 8px 12px;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.toolbar-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 4px;
+  background: #3a3a3a;
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.2s;
+}
+
+.toolbar-btn:hover {
+  background: #4a4a4a;
+}
+
+.toolbar-btn.primary {
+  background: #00a8ff;
+}
+
+.toolbar-btn.primary:hover {
+  background: #0090dd;
+}
+
+.toolbar-btn.danger {
+  background: #ff4444;
+}
+
+.toolbar-btn.danger:hover {
+  background: #dd3333;
+}
+
+/* 录屏控制面板 */
+.recording-panel {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: rgba(30, 30, 30, 0.95);
+  padding: 12px 20px;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  z-index: 9999;
+}
+
+.recording-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #ff4444;
+  font-weight: bold;
+}
+
+.recording-dot {
+  width: 12px;
+  height: 12px;
+  background: #ff4444;
+  border-radius: 50%;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.timer {
+  font-family: monospace;
+  font-size: 18px;
+  color: #fff;
+}
