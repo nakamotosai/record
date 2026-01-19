@@ -20,7 +20,8 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: ['electron']
+              // 原生模块必须作为外部依赖，不能被打包
+              external: ['electron', 'node-screenshots']
             }
           }
         }
@@ -35,7 +36,7 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: ['electron']
+              external: ['electron', 'node-screenshots']
             }
           }
         }

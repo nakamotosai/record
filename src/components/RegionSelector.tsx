@@ -24,22 +24,73 @@ export const RegionSelector: React.FC<RegionSelectorProps> = ({
     const [selection, setSelection] = useState<SelectionRect | null>(null);
     // 新增状态：标记是否已经点击了开始录制
     const [isRecordingActive, setIsRecordingActive] = useState(false);
+    // 屏幕冻结模式：静态截图背景 (F1/F2)
+    const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null);
 
     // 选区边框颜色 - 使用更现代的青色
     const selectionColor = '#00d4ff';
+
+    // 监听来自主进程的截图数据（F1/F2 冻结模式）
+    useEffect(() => {
+        window.electronAPI.onInitScreenshot((buffer: Uint8Array) => {
+            console.log('[RegionSelector] Received screenshot buffer, size:', buffer.byteLength);
+
+            // 收到的是 Uint8Array (Buffer)，创建 Blob URL
+            const blob = new Blob([buffer as any], { type: 'image/png' });
+            const url = URL.createObjectURL(blob);
+
+            console.log('[RegionSelector] Created Blob URL:', url);
+
+            // 预加载图片确保渲染前已在内存中
+            const img = new Image();
+            img.onload = () => {
+                console.log('[RegionSelector] Screenshot preloaded, setting state');
+                setScreenshotUrl(url);
+                // 通知主进程可以显示窗口了
+                window.electronAPI.screenshotReady();
+            };
+            img.src = url;
+        });
+
+        // 监听清除截图事件（窗口重用时）
+        window.electronAPI.onClearScreenshot(() => {
+            console.log('[RegionSelector] Clearing screenshot for window reuse');
+            setScreenshotUrl(prevUrl => {
+                if (prevUrl) URL.revokeObjectURL(prevUrl); // 释放内存
+                return null;
+            });
+            setSelection(null);
+        });
+
+        return () => {
+            // 组件卸载时清理（虽然这个组件通常常驻）
+            setScreenshotUrl(prevUrl => {
+                if (prevUrl) URL.revokeObjectURL(prevUrl);
+                return null;
+            });
+        };
+    }, []);
 
     useEffect(() => {
         const canvas = canvasRef.current;
         if (canvas) {
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
-            const ctx = canvas.getContext('2d');
-            if (ctx) {
-                ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            // 只有录屏模式才默认绘制蒙版 (F1/F2 需要等待 screenshotUrl)
+            // 如果是 F1/F2 且没有 screenshotUrl，则保持全透明 (idle state)
+            if (mode === 'record') {
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                }
             }
         }
-    }, []);
+    }, [screenshotUrl, mode]);
+
+
 
     const drawCanvas = useCallback(() => {
         const canvas = canvasRef.current;
@@ -49,10 +100,17 @@ export const RegionSelector: React.FC<RegionSelectorProps> = ({
         if (!ctx) return;
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // 只有录屏模式才默认绘制蒙版
+        if (mode === 'record') {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        // F1/F2: 如果有 screenshotUrl，由 img 标签负责背景，canvas 只负责选区
+        // 如果没有 screenshotUrl，则是 idle 状态，全透明
 
         if (selection && selection.width > 0 && selection.height > 0) {
+            // 清除选区（让底层内容显示）
             ctx.clearRect(selection.x, selection.y, selection.width, selection.height);
 
             // 青色边框
@@ -77,7 +135,7 @@ export const RegionSelector: React.FC<RegionSelectorProps> = ({
             ctx.fillStyle = 'rgba(220, 220, 220, 0.95)';
             ctx.fillText(label, selection.x + 8, selection.y - 8);
         }
-    }, [selection, selectionColor]);
+    }, [selection, selectionColor, screenshotUrl]);
 
     useEffect(() => {
         drawCanvas();
@@ -149,20 +207,33 @@ export const RegionSelector: React.FC<RegionSelectorProps> = ({
         };
     }, [isSelecting, startPoint, selection, mode, captureAndFinish]);
 
+    // 注：移除了 document.body.cursor 设置，因为它会与元素级 cursor 冲突导致闪烁
+    // 光标样式完全由元素的 CSS cursor 属性控制
+
     // 点击穿透逻辑
     useEffect(() => {
         // 只有当真正开始录制后 (isRecordingActive 为 true)，才开启穿透
-        if (mode === 'record' && isRecordingActive) {
-            window.electronAPI.setIgnoreMouseEvents(true, { forward: true });
+        if (mode === 'record') {
+            if (isRecordingActive) {
+                window.electronAPI.setIgnoreMouseEvents(true, { forward: true });
+            } else {
+                window.electronAPI.setIgnoreMouseEvents(false);
+            }
         } else {
-            // F3 选区阶段、F1/F2 截图阶段、或者录制停止后：必须捕获鼠标
-            window.electronAPI.setIgnoreMouseEvents(false);
+            // F1/F2 模式
+            if (screenshotUrl) {
+                // 有截图了，说明激活了，必须捕获鼠标
+                window.electronAPI.setIgnoreMouseEvents(false);
+            } else {
+                // 没有截图，说明是预热/空闲状态，必须穿透且不转发！！
+                window.electronAPI.setIgnoreMouseEvents(true, { forward: false });
+            }
         }
 
         return () => {
-            window.electronAPI.setIgnoreMouseEvents(false);
+            // 清理时，如果是 F1/F2 且被销毁，主进程会处理销毁。
         };
-    }, [mode, isRecordingActive]); // 依赖 isRecordingActive
+    }, [mode, isRecordingActive, screenshotUrl]); // 关键：依赖 screenshotUrl
 
     // 重置状态
     useEffect(() => {
@@ -215,12 +286,25 @@ export const RegionSelector: React.FC<RegionSelectorProps> = ({
                 height: '100vh',
                 cursor: 'crosshair',
                 overflow: 'hidden',
-                zIndex: 99999,
-                background: 'transparent',
-                // CRITICAL FIX: Disable pointer events on the container during recording
-                // This allows the 'forward: true' in main process to verify that we hit "nothing"
-                // and correctly pass clicks through to the desktop.
-                pointerEvents: (mode === 'record' && isRecordingActive) ? 'none' : 'auto'
+                zIndex: 2147483647,
+
+                // 1. 背景色与透明度控制
+                // Fix: 使用极低不透明度的背景代替完全透明，确保鼠标捕获稳定，防止光标闪烁
+                // 0.02 alpha 既不可见又能保证 Windows 认为这是个实体窗口，不会穿透
+                // 使用 background-image 方案时，背景色作为底色
+                background: (mode !== 'record' && !screenshotUrl) || (mode === 'record' && isRecordingActive) ? 'transparent' : 'rgba(0, 0, 0, 0.02)',
+
+                // 2. 截图图层处理
+                // 已移除 backgroundImage，改用 img 标签以支持高 DPI 和 pointer-events 控制
+
+                // 3. 鼠标交互控制
+                // 只有在空闲状态 (F1/F2 且无截图) 下，pointerEvents 设为 none，确保 forward 生效
+                pointerEvents: (mode !== 'record' && !screenshotUrl) || (mode === 'record' && isRecordingActive) ? 'none' : 'auto',
+
+                // 4. 禁止文本选择
+                // Fix: 禁止文本选择，防止拖拽时光标变成文本选择符 (I-beam) 或导致闪烁
+                userSelect: 'none',
+                WebkitUserSelect: 'none'
             }}
             onMouseDown={handleMouseDown}
             onContextMenu={(e) => {
@@ -229,6 +313,42 @@ export const RegionSelector: React.FC<RegionSelectorProps> = ({
                 onCancel();
             }}
         >
+            {/* 注入全局样式，确保光标样式无死角覆盖，防止 hit-test 失败时回退到默认光标 */}
+            {(mode === 'record' && !isRecordingActive) || (mode !== 'record' && screenshotUrl) ? (
+                <style>{`
+                    html, body, #root {
+                        cursor: crosshair !important;
+                    }
+                    * {
+                        cursor: inherit;
+                    }
+                `}</style>
+            ) : null}
+
+            {/* 冻结模式：恢复使用 img 标签显示高清截图 (解决分辨率变大问题) */}
+            {screenshotUrl && (
+                <img
+                    src={screenshotUrl}
+                    alt=""
+                    style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'fill', // 强制填满窗口，避免任何缩放偏差
+                        // 修正：让图片作为实体层响应鼠标，这是最稳定的方案
+                        pointerEvents: 'auto',
+                        cursor: 'crosshair',
+                        // 优化高分辨率图像渲染质量
+                        imageRendering: 'high-quality' as any
+                    }}
+                    draggable={false}
+                    onDragStart={(e) => e.preventDefault()}
+                />
+            )}
+
+            {/* 已移除 backgroundImage，改回 img 标签 */}
             <canvas
                 ref={canvasRef}
                 style={{
@@ -294,7 +414,8 @@ export const RegionSelector: React.FC<RegionSelectorProps> = ({
                 </div>
             )}
 
-            {!selection && (
+            {/* 仅在非空闲状态显示提示文字 */}
+            {!selection && (mode === 'record' || screenshotUrl) && (
                 <div
                     style={{
                         position: 'fixed',

@@ -20,6 +20,9 @@ export interface ElectronAPI {
 
     onStartRecording: (callback: (event: any, rect: any, settings: any) => void) => () => void;
     onStopRecording: (callback: () => void) => () => void;
+    onInitScreenshot: (callback: (buffer: Uint8Array) => void) => void;
+    screenshotReady: () => void;
+    onClearScreenshot: (callback: () => void) => void;
 
     closeSelector: () => Promise<void>;
     log: (msg: string) => void;

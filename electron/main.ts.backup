@@ -2,8 +2,6 @@ import { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, c
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-// 原生截图模块（比 desktopCapturer 快 10 倍以上）
-import { Monitor } from 'node-screenshots';
 
 // 异常捕获：防止程序直接崩溃
 process.on('uncaughtException', (error) => {
@@ -15,19 +13,12 @@ process.on('uncaughtException', (error) => {
     console.error('Failed to write crash log:', e);
   }
   // 尝试弹窗（如果有活动窗口）
-  if (app.isReady()) {
+  if (app.isReady() && !app.isQuiting) { // 修正: isQuiting -> isQuitting (but electron app property is custom?) electron has 'before-quit' etc. safest is just check ready
     // Electron dialog.showErrorBox is safe to call after ready
     try {
-      // 防止弹窗阻塞进程退出
+      dialog.showErrorBox('ScreenCap Pro 错误', `发生意外错误：\n${error.message}\n请查看 crash.log`);
     } catch (e) { }
   }
-});
-
-// Flag to track if app is quitting
-let isAppQuitting = false;
-app.on('before-quit', () => {
-  isAppQuitting = true;
-  (app as any).isQuitting = true;
 });
 
 const __filename = fileURLToPath(import.meta.url);
@@ -126,10 +117,9 @@ let isRecording = false;
 let prewarmedSelectorWindow: BrowserWindow | null = null;
 
 // 截图缓存：用于「屏幕冻结」模式 (F1/F2)
-// Data optimization: Store Buffer instead of string
-let cachedScreenshot: { pngBuffer: Buffer; nativeImage: Electron.NativeImage; width: number; height: number; scaleFactor: number } | null = null;
+let cachedScreenshot: { dataUrl: string; nativeImage: Electron.NativeImage; width: number; height: number; scaleFactor: number } | null = null;
 
-// 创建预热的选择器窗口（使用 opacity:0 隐藏，避免 show/hide 动画）
+// 创建预热的选择器窗口（隐藏状态）
 function createPrewarmedSelectorWindow() {
   if (prewarmedSelectorWindow && !prewarmedSelectorWindow.isDestroyed()) {
     return; // 已存在则不重复创建
@@ -143,14 +133,14 @@ function createPrewarmedSelectorWindow() {
     y: 0,
     width: width,
     height: height,
-    show: true, // 始终显示，但初始是透明的
+    show: false, // 关键：创建时隐藏
     transparent: true,
     frame: false,
     enableLargerThanScreen: true,
-    alwaysOnTop: true, // 始终置顶，但鼠标穿透
+    alwaysOnTop: true,
     skipTaskbar: true,
     resizable: true,
-    focusable: false, // 初始时不可聚焦
+    focusable: true, // F1/F2 需要
     movable: false,
     hasShadow: false,
     fullscreenable: false,
@@ -166,11 +156,6 @@ function createPrewarmedSelectorWindow() {
     icon: getResourcePath('public/icon.png')
   });
 
-  // 关键：初始状态鼠标穿透，且不转发事件（消除鼠标滞后）
-  prewarmedSelectorWindow.setIgnoreMouseEvents(true, { forward: false });
-  prewarmedSelectorWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  prewarmedSelectorWindow.setAlwaysOnTop(true, 'screen-saver', 1);
-
   // 预加载页面（使用 clipboard 模式）
   const url = process.env.VITE_DEV_SERVER_URL
     ? `${process.env.VITE_DEV_SERVER_URL}?mode=clipboard`
@@ -180,13 +165,11 @@ function createPrewarmedSelectorWindow() {
 
   prewarmedSelectorWindow.on('closed', () => {
     prewarmedSelectorWindow = null;
-    // 关闭后重新创建一个新的 (通常不会关闭，除非异常或退出)
-    if (!(app as any).isQuitting) {
-      setTimeout(() => createPrewarmedSelectorWindow(), 1000);
-    }
+    // 关闭后重新创建一个新的预热窗口
+    setTimeout(() => createPrewarmedSelectorWindow(), 100);
   });
 
-  console.log('[Main] Prewarmed selector window created (opacity: 0)');
+  console.log('[Main] Prewarmed selector window created');
 }
 
 // 创建后台录制窗口
@@ -302,127 +285,56 @@ function showNotification(message: string, mousePos: { x: number, y: number }) {
 }
 
 function closeSelectorWindow() {
-  console.log('[Main] closeSelectorWindow called');
   if (selectorWindow && !selectorWindow.isDestroyed()) {
-    try {
-      // 关键变更：不隐藏窗口，而是恢复鼠标穿透 + 清除内容 (禁用 forward)
-      selectorWindow.setIgnoreMouseEvents(true, { forward: false });
-      selectorWindow.setFocusable(false);
-
-      // 通知渲染进程清除截图（必须立即清除，实现"视觉隐藏"）
-      selectorWindow.webContents.send('clear-screenshot');
-
-      // 通知渲染进程清除截图（如果需要）
-      selectorWindow.webContents.send('clear-screenshot');
-
-      // 将窗口重用为预热窗口
-      if (!prewarmedSelectorWindow || prewarmedSelectorWindow.isDestroyed()) {
-        prewarmedSelectorWindow = selectorWindow;
-        console.log('[Main] Selector window recycled as prewarmed window');
-      } else {
-        // 已有预热窗口，销毁这个
-        selectorWindow.destroy();
-      }
-      selectorWindow = null;
-    } catch (e) {
-      console.error('[Main] Failed to reset selector window:', e);
-      // 回退：强制销毁
-      try { selectorWindow.destroy(); } catch (e2) { }
-      selectorWindow = null;
-    }
+    selectorWindow.destroy();
+    selectorWindow = null;
   }
   globalShortcut.unregister('Escape');
   // 清除截图缓存
   cachedScreenshot = null;
 }
 
-// 预截图函数：使用原生模块快速截取全屏（用于 F1/F2 冻结模式）
-function captureScreenBeforeSelectorSync(): Buffer | null {
-  const startTime = Date.now();
-  try {
-    // 获取主显示器
-    const monitors = Monitor.all();
-    const primaryMonitor = monitors.find(m => m.isPrimary) || monitors[0];
-
-    if (!primaryMonitor) {
-      console.error('[Main] No monitor found');
-      return null;
-    }
-
-    const captureStart = Date.now();
-    // 使用同步截图（最快！）
-    const image = primaryMonitor.captureImageSync();
-    console.log(`[Main] Native captureImageSync took: ${Date.now() - captureStart}ms`);
-
-    const pngStart = Date.now();
-    // 使用 PNG 格式（比 JPEG 快很多！）
-    // 在 Electron 中必须传 true 避免崩溃
-    const pngBuffer = image.toPngSync(true);
-    console.log(`[Main] toPngSync took: ${Date.now() - pngStart}ms`);
-
-    // 转换为 Data URL -> 优化：直接返回 Buffer
-    // const base64Start = Date.now();
-    // const dataUrl = `data:image/png;base64,${pngBuffer.toString('base64')}`;
-    // console.log(`[Main] Base64 convert took: ${Date.now() - base64Start}ms`);
-
-    // 创建 Electron NativeImage 用于裁剪
-    const electronNativeImage = nativeImage.createFromBuffer(pngBuffer);
-
-    // 缓存截图
-    const display = screen.getPrimaryDisplay();
-    cachedScreenshot = {
-      pngBuffer,
-      nativeImage: electronNativeImage,
-      width: display.bounds.width,
-      height: display.bounds.height,
-      scaleFactor: display.scaleFactor
-    };
-
-    console.log(`[Main] Total native screenshot time: ${Date.now() - startTime}ms (${image.width}x${image.height})`);
-    return pngBuffer;
-  } catch (e) {
-    console.error('captureScreenBeforeSelectorSync error:', e);
-    return null;
-  }
-}
-
-// 保留异步版本作为回退
-async function captureScreenBeforeSelector(): Promise<Buffer | null> {
-  // 优先使用同步原生截图
-  const result = captureScreenBeforeSelectorSync();
-  if (result) return result;
-
-  // 回退到 desktopCapturer
-  console.log('[Main] Falling back to desktopCapturer');
+// 预截图函数：在创建窗口前截取全屏（用于 F1/F2 冻结模式）
+async function captureScreenBeforeSelector(): Promise<string | null> {
   const startTime = Date.now();
   try {
     const display = screen.getPrimaryDisplay();
-    const { width, height } = display.bounds;
-    const scaleFactor = display.scaleFactor;
+    const { width, height } = display.bounds; // 逻辑分辨率，如 1920x1080
+    const scaleFactor = display.scaleFactor;   // 如 2.0 (4K)
 
+    // 使用原生分辨率截图以保证高清晰度
     const thumbSize = {
       width: Math.round(width * scaleFactor),
       height: Math.round(height * scaleFactor)
     };
 
+    const captureStart = Date.now();
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
       thumbnailSize: thumbSize
     });
+    console.log(`[Main] desktopCapturer took: ${Date.now() - captureStart}ms`);
 
     if (!sources[0]) return null;
 
     const nativeImg = sources[0].thumbnail;
+
+    const dataUrlStart = Date.now();
+    // 使用 JPEG 格式减小体积，质量设为 90%
+    const dataUrl = nativeImg.toDataURL({ scaleFactor: 1.0 });
+    console.log(`[Main] toDataURL took: ${Date.now() - dataUrlStart}ms`);
+
+    // 缓存截图：保存原生图像用于裁剪，保存逻辑分辨率供坐标计算
     cachedScreenshot = {
-      pngBuffer: nativeImg.toPNG(),
+      dataUrl,
       nativeImage: nativeImg,
-      width,
+      width,  // 逻辑分辨率
       height,
       scaleFactor
     };
 
-    console.log(`[Main] Fallback screenshot time: ${Date.now() - startTime}ms`);
-    return cachedScreenshot.pngBuffer;
+    console.log(`[Main] Total screenshot time: ${Date.now() - startTime}ms (native: ${thumbSize.width}x${thumbSize.height}, logical: ${width}x${height})`);
+    return dataUrl;
   } catch (e) {
     console.error('captureScreenBeforeSelector error:', e);
     return null;
@@ -458,41 +370,19 @@ async function createSelectorWindow(mode: 'clipboard' | 'file' | 'record') {
       selectorWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
       selectorWindow.setBounds({ x: 0, y: 0, width, height });
 
-      // 启用焦点（关闭活菜单）
-      selectorWindow.setFocusable(true);
-
       // 等待截图完成
-      const screenshotBuffer = await screenshotPromise;
+      const screenshotDataUrl = await screenshotPromise;
 
-      if (screenshotBuffer) {
-        // 监听渲染进程确认图片加载完成
-        const showWindow = () => {
-          if (selectorWindow && !selectorWindow.isDestroyed()) {
-            // 关键变更：不使用 show()，而是捕获鼠标
-            selectorWindow.setIgnoreMouseEvents(false);
-            selectorWindow.focus();
-            // selectorWindow.show();
-            selectorWindow.moveTop();
-            console.log(`[Main] Fast path total time: ${Date.now() - startTime}ms`);
-          }
-        };
-
-        // 设置超时保护（防止渲染进程未响应）
-        const timeout = setTimeout(showWindow, 100);
-
-        ipcMain.once('screenshot-ready', () => {
-          clearTimeout(timeout);
-          showWindow();
-        });
-
-        selectorWindow.webContents.send('init-screenshot', screenshotBuffer);
-      } else {
-        // 无截图时也需要捕获鼠标
-        selectorWindow.setIgnoreMouseEvents(false);
-        // selectorWindow.show();
-        selectorWindow.focus();
-        selectorWindow.moveTop();
+      if (screenshotDataUrl) {
+        selectorWindow.webContents.send('init-screenshot', screenshotDataUrl);
       }
+
+      // 显示窗口
+      selectorWindow.show();
+      selectorWindow.focus();
+      selectorWindow.moveTop();
+
+      console.log(`[Main] Fast path total time: ${Date.now() - startTime}ms`);
 
       // 后台创建新的预热窗口
       setTimeout(() => createPrewarmedSelectorWindow(), 50);
@@ -500,7 +390,7 @@ async function createSelectorWindow(mode: 'clipboard' | 'file' | 'record') {
     } else {
       // 回退：没有预热窗口，使用传统方式
       console.log('[Main] No prewarmed window, using fallback');
-      const screenshotBuffer = await captureScreenBeforeSelector();
+      const screenshotDataUrl = await captureScreenBeforeSelector();
 
       selectorWindow = new BrowserWindow({
         x: 0, y: 0, width, height,
@@ -525,18 +415,14 @@ async function createSelectorWindow(mode: 'clipboard' | 'file' | 'record') {
         icon: getResourcePath('public/icon.png')
       });
 
-      // 确保初始也是透明+穿透，然后立即激活
-      // selectorWindow.setIgnoreMouseEvents(true, { forward: true });
-
       selectorWindow.setAlwaysOnTop(true, 'screen-saver', 1);
       selectorWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
       selectorWindow.setBounds({ x: 0, y: 0, width, height });
 
-      if (screenshotBuffer) {
+      if (screenshotDataUrl) {
         selectorWindow.webContents.once('dom-ready', () => {
           if (selectorWindow && !selectorWindow.isDestroyed()) {
-            selectorWindow.webContents.send('init-screenshot', screenshotBuffer);
-            // 这里的 fallback 窗口可能使用传统的 show，或者也统一用穿透
+            selectorWindow.webContents.send('init-screenshot', screenshotDataUrl);
           }
         });
       }
@@ -577,11 +463,18 @@ async function createSelectorWindow(mode: 'clipboard' | 'file' | 'record') {
     selectorWindow.setContentProtection(true);
     selectorWindow.setBounds({ x: 0, y: 0, width, height });
 
-    // 移除 Z-ORDER 循环：频繁调用导致光标闪烁
-    // const zOrderInterval = setInterval(() => { ... });
+    // Z-ORDER 维护循环
+    const zOrderInterval = setInterval(() => {
+      if (selectorWindow && !selectorWindow.isDestroyed()) {
+        try {
+          selectorWindow.moveTop();
+          selectorWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+        } catch (e) { }
+      }
+    }, 20);
 
     selectorWindow.on('closed', () => {
-      // clearInterval(zOrderInterval);
+      clearInterval(zOrderInterval);
     });
 
     const url = process.env.VITE_DEV_SERVER_URL

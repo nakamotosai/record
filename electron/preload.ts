@@ -23,6 +23,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('stop-recording', callback);
         return () => ipcRenderer.removeListener('stop-recording', callback);
     },
+    onInitScreenshot: (callback: (buffer: Uint8Array) => void) => {
+        ipcRenderer.on('init-screenshot', (_event, buffer) => callback(buffer));
+    },
+
+    // 通知主进程截图已加载完成
+    screenshotReady: () => ipcRenderer.send('screenshot-ready'),
+
+    // 监听主进程清除截图的事件
+    onClearScreenshot: (callback: () => void) => {
+        ipcRenderer.on('clear-screenshot', callback);
+    },
 
     closeSelector: () => ipcRenderer.invoke('close-selector'),
     log: (msg) => ipcRenderer.send('renderer-log', msg),
